@@ -116,7 +116,12 @@ function listCourses(auth) {
     }
   );
 }
-
+async function listNameOfCourses(auth) {
+  const classroom = google.classroom({ version: "v1", auth });
+  const res = await classroom.courses.list();
+  const courses = res.data.courses;
+  return courses.map((course) => course.name);
+}
 async function getCourse(auth, courseId) {
   const classroom = google.classroom({ version: "v1", auth });
   try {
@@ -134,9 +139,8 @@ async function getCourse(auth, courseId) {
     );
   }
 }
-
+// ARCHIVED
 async function createCourse(auth, data) {
-  console.log("🚀 ~ file: index.js ~ line 120 ~ createCourse ~ data", data);
   const classroom = google.classroom({ version: "v1", auth });
   try {
     // Create the course using course details.
@@ -145,14 +149,15 @@ async function createCourse(auth, data) {
         ...data,
       },
     });
+    console.log(
+      "🚀 ~ file: index.js ~ line 147 ~ createCourse ~ course",
+      course
+    );
     return course.data.id;
   } catch (err) {
+    console.log("🚀 ~ file: index.js ~ line 153 ~ createCourse ~ err", err);
     // TODO (developer) - Handle Courses.create() exception
-    console.log(
-      "Failed to create course %s with an error %s",
-      data.name,
-      err.message
-    );
+    return undefined;
   }
 }
 async function updateCourse(auth, courseId, data) {
@@ -175,20 +180,18 @@ async function updateCourse(auth, courseId, data) {
     let course = await classroom.courses.get({
       id: courseId,
     });
-    let courseUpdate = {
-      ...course.data,
-      ...data,
-    };
+    // let courseUpdate = {
+    //   ...course.data,
+    //   ...data,
+    // };
     course = await classroom.courses.update({
       id: courseId,
       requestBody: {
-        ...courseUpdate,
+        name: course.data.name,
+        ...data,
       },
     });
-    console.log(
-      "🚀 ~ file: index.js ~ line 174 ~ updateCourse ~ course",
-      course
-    );
+    return course.data;
   } catch (err) {
     // TODO (developer) - Handle Courses.create() exception
     console.log(
@@ -200,27 +203,16 @@ async function updateCourse(auth, courseId, data) {
 }
 
 async function deleteCourse(auth, courseId) {
-  console.log(
-    "🚀 ~ file: index.js ~ line 160 ~ updateCourse ~ courseId",
-    courseId
-  );
   const classroom = google.classroom({ version: "v1", auth });
   try {
     let course = await classroom.courses.get({
       id: courseId,
     });
-    console.log(
-      "🚀 ~ file: index.js ~ line 215 ~ deleteCourse ~ course",
-      course.data.id
-    );
-    if (course.data.id) {
+    if (course.data.id && course.data.courseState === "ARCHIVED") {
       const deletedCourse = await classroom.courses.delete({
         id: course.data.id,
       });
-      console.log(
-        "🚀 ~ file: index.js ~ line 219 ~ deleteCourse ~ deletedCouse",
-        deletedCourse.data
-      );
+      return deletedCourse.status === 200 ? true : false;
     }
   } catch (err) {
     // TODO (developer) - Handle Courses.create() exception
@@ -229,129 +221,227 @@ async function deleteCourse(auth, courseId) {
       courseId,
       err.message
     );
+    return false;
   }
 }
 // [END classroom_quickstart]
-app.get('/api/course',async (req,res,next)=>{
-    fs.readFile("credentials.json", (err, content) => {
-        if (err) return console.log("Error loading client secret file:", err);
-        authorize(JSON.parse(content), listCourses);
-      });
-    
-      let authorize = (credentials, callback) => {
-        const { client_secret, client_id, redirect_uris } = credentials.installed;
-        const oAuth2Client = new google.auth.OAuth2(
-          client_id,
-          client_secret,
-          redirect_uris[0]
-        );
-    
-        fs.readFile(TOKEN_PATH, (err, token) => {
-          oAuth2Client.setCredentials(JSON.parse(token));
-          callback(oAuth2Client);
-        });
-      };
-})
-
-app.post("/api/course/create", async (req, res, next) => {
-  fs.readFile("credentials.json", (err, content) => {
-    if (err) return console.log("Error loading client secret file:", err);
-    authorize(JSON.parse(content), createCourse);
-  });
-
-  let authorize = (credentials, callback) => {
-    const { client_secret, client_id, redirect_uris } = credentials.installed;
-    const oAuth2Client = new google.auth.OAuth2(
+app.get("/api/course/copy", async (req, res, next) => {
+  const contentJSON = await fs.promises.readFile("credentials.json");
+  let check = false;
+  let oAuth2Client;
+  if (contentJSON) {
+    const { client_secret, client_id, redirect_uris } =
+      JSON.parse(contentJSON).installed;
+    oAuth2Client = new google.auth.OAuth2(
       client_id,
       client_secret,
       redirect_uris[0]
     );
-
-    fs.readFile(TOKEN_PATH, (err, token) => {
+    const token = await fs.promises.readFile(TOKEN_PATH);
+    if (token) {
       oAuth2Client.setCredentials(JSON.parse(token));
-      callback(oAuth2Client, req.body);
+      check = true;
+    }
+  }
+  if (!check) {
+    return res.status(400).json({
+      message: "Error read file",
     });
-  };
-  //   console.log("🚀 ~ file: index.js ~ line 121 ~ app.post ~ req", req.body);
+  }
+  const listCoursesName = await listNameOfCourses(oAuth2Client);
+  if (
+    listCoursesName &&
+    listCoursesName.length > 0 &&
+    listCoursesName.includes(req.body.name)
+  ) {
+    return res.status(400).json({
+      message: "Error copy course because already name exist",
+    });
+  }
+  const course = await createCourse(oAuth2Client, req.body);
+  if (!courses) {
+    return res.status(400).json({
+      message: "Error coppy course",
+    });
+  }
+  return res.status(201).json({
+    message: "Coppy course successfully",
+    data: courses,
+  });
+});
+// ACTIVE, ARCHIVED, PROVISIONED, DECLINED. SUSPENDED ENUM courseState
+app.post("/api/course/create", async (req, res, next) => {
+  const contentJSON = await fs.promises.readFile("credentials.json");
+  let check = false;
+  let oAuth2Client;
+  if (contentJSON) {
+    const { client_secret, client_id, redirect_uris } =
+      JSON.parse(contentJSON).installed;
+    oAuth2Client = new google.auth.OAuth2(
+      client_id,
+      client_secret,
+      redirect_uris[0]
+    );
+    const token = await fs.promises.readFile(TOKEN_PATH);
+    if (token) {
+      oAuth2Client.setCredentials(JSON.parse(token));
+      check = true;
+    }
+  }
+  if (!check) {
+    return res.status(400).json({
+      message: "Error read file",
+    });
+  }
+  const course = await createCourse(oAuth2Client, req.body);
+  if (!course) {
+    return res.status(400).json({
+      message: "Error create course",
+    });
+  }
+  return res.status(201).json({
+    message: "Create course successfully",
+    data: course,
+  });
 });
 app.get("/api/course/:id", async (req, res, next) => {
-  console.log("🚀 ~ file: index.js ~ line 183 ~ app.get ~ req", req.params);
-  fs.readFile("credentials.json", (err, content) => {
-    if (err) return console.log("Error loading client secret file:", err);
-    authorize(JSON.parse(content), getCourse);
-  });
-
-  let authorize = (credentials, callback) => {
-    const { client_secret, client_id, redirect_uris } = credentials.installed;
-    const oAuth2Client = new google.auth.OAuth2(
+  const contentJSON = await fs.promises.readFile("credentials.json");
+  let check = false;
+  let oAuth2Client;
+  if (contentJSON) {
+    const { client_secret, client_id, redirect_uris } =
+      JSON.parse(contentJSON).installed;
+    oAuth2Client = new google.auth.OAuth2(
       client_id,
       client_secret,
       redirect_uris[0]
     );
-
-    fs.readFile(TOKEN_PATH, (err, token) => {
+    const token = await fs.promises.readFile(TOKEN_PATH);
+    if (token) {
       oAuth2Client.setCredentials(JSON.parse(token));
-      callback(oAuth2Client, req.params);
+      check = true;
+    }
+  }
+  if (!check) {
+    return res.status(400).json({
+      message: "Error read file",
     });
-  };
+  }
+  const courses = await getCourse(oAuth2Client, req.params.id);
+  if (!courses) {
+    return res.status(400).json({
+      message: "Error create course",
+    });
+  }
+  return res.status(201).json({
+    message: "get one course by id successfully",
+    data: courses,
+  });
 });
 
 app.put("/api/course/:id", async (req, res, next) => {
-  fs.readFile("credentials.json", (err, content) => {
-    if (err) return console.log("Error loading client secret file:", err);
-    authorize(JSON.parse(content), updateCourse);
-  });
-
-  let authorize = (credentials, callback) => {
-    const { client_secret, client_id, redirect_uris } = credentials.installed;
-    const oAuth2Client = new google.auth.OAuth2(
+  const contentJSON = await fs.promises.readFile("credentials.json");
+  let check = false;
+  let oAuth2Client;
+  if (contentJSON) {
+    const { client_secret, client_id, redirect_uris } =
+      JSON.parse(contentJSON).installed;
+    oAuth2Client = new google.auth.OAuth2(
       client_id,
       client_secret,
       redirect_uris[0]
     );
-
-    fs.readFile(TOKEN_PATH, (err, token) => {
+    const token = await fs.promises.readFile(TOKEN_PATH);
+    if (token) {
       oAuth2Client.setCredentials(JSON.parse(token));
-      callback(oAuth2Client, req.params.id, req.body);
+      check = true;
+    }
+  }
+  if (!check) {
+    return res.status(400).json({
+      message: "Error read file",
     });
-  };
-  //   console.log("🚀 ~ file: index.js ~ line 121 ~ app.post ~ req", req.body);
+  }
+  const courses = await updateCourse(oAuth2Client, req.params.id, req.body);
+  if (!courses) {
+    return res.status(400).json({
+      message: "Error create course",
+    });
+  }
+  return res.status(200).json({
+    message: "update course successfully",
+    data: courses,
+  });
 });
 
 app.delete("/api/course/:id", async (req, res, next) => {
-  const auth = new google.auth.GoogleAuth({
-    keyFile: path.resolve(__dirname, "./service-account-file.json"),
-    scopes: ["https://www.googleapis.com/auth/classroom.courses"],
-  });
-  const authClient = await auth.getClient();
-  google.options({ auth: authClient });
-  const classroom = google.classroom({ version: "v1", auth: authClient });
-    const deletedCourse = await classroom.courses.get({
-      id: req.params.id,
-    });
-    console.log(
-      "🚀 ~ file: index.js ~ line 310 ~ app.delete ~ deletedCourse",
-      deletedCourse
+  const contentJSON = await fs.promises.readFile("credentials.json");
+  let check = false;
+  let oAuth2Client;
+  if (contentJSON) {
+    const { client_secret, client_id, redirect_uris } =
+      JSON.parse(contentJSON).installed;
+    oAuth2Client = new google.auth.OAuth2(
+      client_id,
+      client_secret,
+      redirect_uris[0]
     );
-  //   fs.readFile("credentials.json", (err, content) => {
-  //     if (err) return console.log("Error loading client secret file:", err);
-  //     authorize(JSON.parse(content), deleteCourse);
-  //   });
+    const token = await fs.promises.readFile(TOKEN_PATH);
+    if (token) {
+      oAuth2Client.setCredentials(JSON.parse(token));
+      check = true;
+    }
+  }
+  if (!check) {
+    return res.status(400).json({
+      message: "Error read file",
+    });
+  }
+  check = await deleteCourse(oAuth2Client, req.params.id);
+  if (!check) {
+    return res.status(400).json({
+      message: "Error delete course",
+    });
+  }
+  return res.status(200).json({
+    message: "Delete one course successfully",
+  });
+});
 
-  //   let authorize = (credentials, callback) => {
-  //     const { client_secret, client_id, redirect_uris } = credentials.installed;
-  //     const oAuth2Client = new google.auth.OAuth2(
-  //       client_id,
-  //       client_secret,
-  //       redirect_uris[0]
-  //     );
-
-  //     fs.readFile(TOKEN_PATH, (err, token) => {
-  //       oAuth2Client.setCredentials(JSON.parse(token));
-  //       callback(oAuth2Client, req.params.id);
-  //     });
-  //   };
-  //   console.log("🚀 ~ file: index.js ~ line 121 ~ app.post ~ req", req.body);
+// coppy chi can name khac la dc
+app.post("/api/course/", async (req, res, next) => {
+  const contentJSON = await fs.promises.readFile("credentials.json");
+  let check = false;
+  let oAuth2Client;
+  if (contentJSON) {
+    const { client_secret, client_id, redirect_uris } =
+      JSON.parse(contentJSON).installed;
+    oAuth2Client = new google.auth.OAuth2(
+      client_id,
+      client_secret,
+      redirect_uris[0]
+    );
+    const token = await fs.promises.readFile(TOKEN_PATH);
+    if (token) {
+      oAuth2Client.setCredentials(JSON.parse(token));
+      check = true;
+    }
+  }
+  if (!check) {
+    return res.status(400).json({
+      message: "Error read file",
+    });
+  }
+  const course = await listCourses(oAuth2Client);
+  check = await deleteCourse(oAuth2Client, req.params.id);
+  if (!check) {
+    return res.status(400).json({
+      message: "Error delete course",
+    });
+  }
+  return res.status(200).json({
+    message: "Delete one course successfully",
+  });
 });
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, async () => {
